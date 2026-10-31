@@ -21,9 +21,11 @@ function parseExpense(text) {
 }
 
 export default function Home() {
-  const [expenses, setExpenses] = useState(SEED);
-  const [text, setText] = useState('');
-  const [ready, setReady] = useState(false);
+ const [expenses, setExpenses] = useState(SEED);
+ const [text, setText] = useState('');
+ const [ready, setReady] = useState(false);
+ const [loading, setLoading] = useState(false);
+ const [error, setError] = useState('');
 
   // Load any saved expenses from the browser on first render.
   useEffect(() => {
@@ -42,13 +44,58 @@ export default function Home() {
   }, [expenses, ready]);
 
   const total = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const addExpense = async () => {
+  const t = text.trim();
 
-  const addExpense = () => {
-    const t = text.trim();
-    if (!t) return;
-    setExpenses((list) => [...list, parseExpense(t)]);
+  if (!t || loading) return;
+
+  setLoading(true);
+  setError('');
+
+  try {
+    const response = await fetch('/api/split', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sentence: t,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success || !data.expense) {
+      throw new Error(data.error || 'AI could not process this expense.');
+    }
+
+    const aiExpense = data.expense;
+
+    if (!Number.isFinite(Number(aiExpense.amount)) ||
+        Number(aiExpense.amount) <= 0) {
+      throw new Error('Please provide a valid expense amount.');
+    }
+
+    const newExpense = {
+      id: 'ai-' + Date.now(),
+      emoji: '🧾',
+      name: aiExpense.description || 'Expense',
+      paidBy: aiExpense.paidBy || 'Unknown',
+      amount: Number(aiExpense.amount),
+      participants: aiExpense.participants || [],
+      splitType: aiExpense.splitType || 'equal',
+    };
+
+    setExpenses((list) => [...list, newExpense]);
     setText('');
-  };
+
+  } catch (err) {
+    console.error('Expense processing error:', err);
+    setError(err.message || 'Something went wrong. Please try again.');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const removeExpense = (id) => setExpenses((list) => list.filter((e) => e.id !== id));
 
@@ -74,8 +121,31 @@ export default function Home() {
             placeholder="Add an expense…"
             aria-label="Add an expense"
           />
-          <button style={styles.addBtn} onClick={addExpense} aria-label="Add">+</button>
+          <button
+  style={{
+    ...styles.addBtn,
+    opacity: loading ? 0.6 : 1,
+    cursor: loading ? 'wait' : 'pointer',
+  }}
+  onClick={addExpense}
+  disabled={loading}
+  aria-label="Process expense with AI"
+>
+  {loading ? '...' : '+'}
+</button>
         </div>
+        {error && (
+  <div style={{
+    color: '#dc2626',
+    fontSize: 13,
+    marginBottom: 12,
+    padding: 10,
+    background: '#fef2f2',
+    borderRadius: 10,
+  }}>
+    {error}
+  </div>
+)}
 
         {/* Expense list */}
         <div style={styles.list}>
@@ -87,7 +157,11 @@ export default function Home() {
               <div style={styles.itemEmoji}>{e.emoji}</div>
               <div style={styles.itemMain}>
                 <div style={styles.itemName}>{e.name}</div>
-                <div style={styles.itemPaid}>paid by {e.paidBy}</div>
+               <div style={styles.itemPaid}>
+                   paid by {e.paidBy}
+                    {e.participants?.length > 0 &&
+                     ` · split with ${e.participants.join(', ')}`}
+                     </div>
               </div>
               <div style={styles.itemAmount}>{inr(e.amount)}</div>
               <button style={styles.remove} onClick={() => removeExpense(e.id)} aria-label={`Remove ${e.name}`}>×</button>
