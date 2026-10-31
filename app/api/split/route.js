@@ -8,14 +8,10 @@ const ai = new GoogleGenAI({
 
 export async function POST(request) {
   try {
-    // Check API key
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("GEMINI_API_KEY is missing.");
-    }
-
+    // 1. Read user input
     const { sentence } = await request.json();
 
-    if (!sentence || typeof sentence !== "string") {
+    if (!sentence || typeof sentence !== "string" || !sentence.trim()) {
       return NextResponse.json(
         {
           success: false,
@@ -25,82 +21,125 @@ export async function POST(request) {
       );
     }
 
-    // Generate structured expense data using Gemini
-    let response;
+    // 2. Call Gemini with automatic retries
+    let response = null;
+    let lastError = null;
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       try {
         response = await ai.models.generateContent({
           model: "gemini-3.8-flash",
+
           contents: `
             Extract expense information from this sentence:
 
-            "${sentence}"
+            "${sentence.trim()}"
 
-            Return ONLY valid JSON in this format:
-
-            {
-              "description": "Expense description",
-              "amount": 1800,
-              "currency": "INR",
-              "paidBy": "Person name",
-              "participants": ["Person 1", "Person 2"],
-              "splitType": "equal"
-            }
-
-            Rules:
+            Instructions:
+            - Extract the expense description.
+            - Extract the amount as a number.
+            - Extract the currency.
+            - Identify who paid.
+            - Identify all participants.
+            - Identify the split type.
             - Do not invent missing information.
-            - Amount must be a number.
-            - Participants must be an array.
-            - Use INR if rupees are mentioned.
-            - Return only JSON.
+            - If participants are not mentioned, return an empty array.
+            - If split type is not mentioned, use equal.
+            - If payer is not mentioned, return an empty string.
           `,
+
           config: {
             responseMimeType: "application/json",
+
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                description: {
+                  type: "STRING",
+                },
+                amount: {
+                  type: "NUMBER",
+                },
+                currency: {
+                  type: "STRING",
+                },
+                paidBy: {
+                  type: "STRING",
+                },
+                participants: {
+                  type: "ARRAY",
+                  items: {
+                    type: "STRING",
+                  },
+                },
+                splitType: {
+                  type: "STRING",
+                },
+              },
+              required: [
+                "description",
+                "amount",
+                "currency",
+                "paidBy",
+                "participants",
+                "splitType",
+              ],
+            },
           },
         });
 
+        // Successful response
         break;
 
       } catch (error) {
-        const status = Number(error?.status ?? error?.code);
+        lastError = error;
 
-        // Retry only temporary errors, not invalid model errors.
-        const retryable =
-          status === 429 ||
-          status >= 500 ||
-          !status;
+        console.error(
+          `Gemini attempt ${attempt + 1} failed:`,
+          error.message
+        );
 
-        if (!retryable || attempt === 2) {
+        if (attempt === 3) {
           throw error;
         }
 
-        await new Promise(resolve =>
-          setTimeout(resolve, 1500 * (attempt + 1))
+        // Retry after 2, 4 and 6 seconds
+        await new Promise((resolve) =>
+          setTimeout(resolve, 2000 * (attempt + 1))
         );
       }
     }
 
-    // Read and parse Gemini response
-    const cleanedText = response.text.trim();
-    const expense = JSON.parse(cleanedText);
+    // 3. Check Gemini response
+    if (!response || !response.text) {
+      throw lastError || new Error("Gemini returned an empty response.");
+    }
 
-    // Validate AI output
+    // 4. Parse JSON
+    let expense;
+
+    try {
+      expense = JSON.parse(response.text);
+    } catch {
+      throw new Error("Gemini returned an invalid JSON response.");
+    }
+
+    // 5. Validate expense amount
     if (
-      !expense.description ||
       !Number.isFinite(Number(expense.amount)) ||
       Number(expense.amount) <= 0
     ) {
-      throw new Error("Gemini returned invalid expense data.");
+      throw new Error("Please provide a valid expense amount.");
     }
 
+    // 6. Return successful response
     return NextResponse.json({
       success: true,
       expense: {
-        description: expense.description,
+        description: expense.description || "Expense",
         amount: Number(expense.amount),
         currency: expense.currency || "INR",
-        paidBy: expense.paidBy || "Unknown",
+        paidBy: expense.paidBy || "",
         participants: Array.isArray(expense.participants)
           ? expense.participants
           : [],
@@ -111,12 +150,23 @@ export async function POST(request) {
   } catch (error) {
     console.error("Gemini API Error:", error);
 
+    const message = String(error.message || "");
+
+    const isUnavailable =
+      error.status === 503 ||
+      message.includes("UNAVAILABLE") ||
+      message.includes('"code":503');
+
     return NextResponse.json(
       {
         success: false,
-        error: "AI service is temporarily unavailable. Please try again.",
+        error: isUnavailable
+          ? "Gemini is temporarily busy. Please try again in 30 seconds."
+          : "Unable to process expense. " + message,
       },
-      { status: 503 }
+      {
+        status: isUnavailable ? 503 : 500,
+      }
     );
   }
 }
