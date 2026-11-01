@@ -30,68 +30,130 @@ export async function POST(request) {
       );
     }
 
-    // 3. Call Gemini
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+// 3. Call Gemini with an improved prompt
 
-      contents: `
-        Extract expense information from this sentence:
+const prompt = `
+You are an intelligent expense-splitting assistant for SplitSmart.
 
-        "${sentence.trim()}"
+Your task is to extract expense information from the user's sentence.
 
-        Rules:
-        - Extract the expense description.
-        - Extract amount as a number.
-        - Currency should default to INR.
-        - Identify who paid.
-        - Identify all participants.
-        - Identify split type.
-        - Never invent missing information.
-        - If participants are missing, return [].
-        - If payer is missing, return an empty string.
-        - If split type is missing, use equal.
-        - Return only structured JSON.
-      `,
+USER INPUT:
+"${sentence.trim()}"
 
-      config: {
-        responseMimeType: "application/json",
+RULES:
 
-        responseSchema: {
-          type: "OBJECT",
-          properties: {
-            description: {
-              type: "STRING",
-            },
-            amount: {
-              type: "NUMBER",
-            },
-            currency: {
-              type: "STRING",
-            },
-            paidBy: {
-              type: "STRING",
-            },
-            participants: {
-              type: "ARRAY",
-              items: {
-                type: "STRING",
-              },
-            },
-            splitType: {
-              type: "STRING",
-            },
-          },
-          required: [
-            "description",
-            "amount",
-            "currency",
-            "paidBy",
-            "participants",
-            "splitType",
-          ],
+1. DESCRIPTION:
+Identify what the expense was for.
+Examples: dinner, cab, groceries, coffee, movie.
+
+2. AMOUNT:
+Extract the exact numerical amount.
+Never invent an amount.
+If missing, return 0.
+
+3. CURRENCY:
+Default to INR unless another currency is specified.
+
+4. PAID BY:
+Identify who paid.
+
+- If the user says "I paid", "Paid 600", or "I spent",
+  assume the speaker (Me) paid.
+- If a person's name is mentioned as the payer, use that name.
+- If the payer cannot be determined, return an empty string.
+
+5. PARTICIPANTS:
+Identify everyone sharing the expense.
+
+IMPORTANT PARTICIPANT RULES:
+
+- "Me, Raj and Priya had dinner for 1200"
+  -> 3 participants: Me, Raj, Priya.
+
+- "900 cab split with 2 friends"
+  -> 3 participants total (me + 2 friends).
+
+- "Coffee 300, just me"
+  -> 1 participant.
+
+- "1500 groceries, 4 of us"
+  -> 4 participants.
+
+- "Paid 600 for movie, split 3 ways"
+  -> 3 participants.
+
+- "Dinner 2000 with Vikram and Aisha"
+  -> 3 participants total if the speaker is included.
+
+Use actual names whenever provided.
+For unnamed participants, use neutral placeholders:
+Person 1, Person 2, etc.
+
+Never count the same person twice.
+
+If participants are not mentioned, return an empty array.
+
+6. SPLIT TYPE:
+Default to equal splitting unless specified otherwise.
+Recognize unequal, percentage and custom splits if mentioned.
+
+7. OUTPUT:
+Return ONLY valid JSON matching the schema.
+Do not include explanations, Markdown or additional text.
+Never guess missing information.
+`;
+
+const response = await ai.models.generateContent({
+ model: "gemini-3.5-flash-lite",
+
+  contents: prompt,
+
+  config: {
+    responseMimeType: "application/json",
+
+    responseSchema: {
+      type: "OBJECT",
+
+      properties: {
+        description: {
+          type: "STRING"
         },
+
+        amount: {
+          type: "NUMBER"
+        },
+
+        currency: {
+          type: "STRING"
+        },
+
+        paidBy: {
+          type: "STRING"
+        },
+
+        participants: {
+          type: "ARRAY",
+          items: {
+            type: "STRING"
+          }
+        },
+
+        splitType: {
+          type: "STRING"
+        }
       },
-    });
+
+      required: [
+        "description",
+        "amount",
+        "currency",
+        "paidBy",
+        "participants",
+        "splitType"
+      ]
+    }
+  }
+});
 
     // 4. Check response
     const resultText = response.text;
